@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import collections.abc as cabc
 import contextlib
+import io
 import math
 import os
 import shlex
@@ -23,7 +24,6 @@ from ._compat import _default_text_stdout
 from ._compat import CYGWIN
 from ._compat import get_best_encoding
 from ._compat import isatty
-from ._compat import open_stream
 from ._compat import strip_ansi
 from ._compat import term_len
 from ._compat import WIN
@@ -366,7 +366,20 @@ class ProgressBar(t.Generic[V]):
             self.render_progress()
 
 
-def pager(generator: cabc.Iterable[str], color: bool | None = None) -> None:
+class MaybeStripAnsi(io.TextIOWrapper):
+    def __init__(self, stream: t.IO[bytes], *, color: bool, **kwargs: t.Any):
+        super().__init__(stream, **kwargs)
+        self.color = color
+
+    def write(self, text: str) -> int:
+        if not self.color:
+            text = strip_ansi(text)
+        return super().write(text)
+
+
+def _pager_contextmanager(
+    color: bool | None = None,
+) -> t.ContextManager[t.Tuple[t.BinaryIO, str, bool]]:
     """Decide what method to use for paging through text."""
     stdout = _default_text_stdout()
 
@@ -376,50 +389,52 @@ def pager(generator: cabc.Iterable[str], color: bool | None = None) -> None:
         stdout = StringIO()
 
     if not isatty(sys.stdin) or not isatty(stdout):
-        return _nullpager(stdout, generator, color)
+        return _nullpager(stdout, color)
 
     # Split and normalize the pager command into parts.
     pager_cmd_parts = shlex.split(os.environ.get("PAGER", ""), posix=False)
     if pager_cmd_parts:
         if WIN:
-            if _tempfilepager(generator, pager_cmd_parts, color):
-                return
-        elif _pipepager(generator, pager_cmd_parts, color):
-            return
+            return _tempfilepager(pager_cmd_parts, color)
+        return _pipepager(pager_cmd_parts, color)
 
     if os.environ.get("TERM") in ("dumb", "emacs"):
-        return _nullpager(stdout, generator, color)
-    if (WIN or sys.platform.startswith("os2")) and _tempfilepager(
-        generator, ["more"], color
-    ):
-        return
-    if _pipepager(generator, ["less"], color):
-        return
-
-    import tempfile
-
-    fd, filename = tempfile.mkstemp()
-    os.close(fd)
-    try:
-        if _pipepager(generator, ["more"], color):
-            return
-        return _nullpager(stdout, generator, color)
-    finally:
-        os.unlink(filename)
+        return _nullpager(stdout, color)
+    if WIN or sys.platform.startswith("os2"):
+        return _tempfilepager(["more"], color)
+    return _pipepager(["less"], color)
 
 
+@contextlib.contextmanager
+def get_pager_file(color: bool | None = None) -> t.Generator[t.IO, None, None]:
+    """Context manager.
+    Yields a writable file-like object which can be used as an output pager.
+    .. versionadded:: 8.2
+    :param color: controls if the pager supports ANSI colors or not.  The
+                  default is autodetection.
+    """
+    with _pager_contextmanager(color=color) as (stream, encoding, color):
+        if not getattr(stream, "encoding", None):
+            # wrap in a text stream
+            stream = MaybeStripAnsi(stream, color=color, encoding=encoding)
+        yield stream
+        stream.flush()
+
+
+@contextlib.contextmanager
 def _pipepager(
-    generator: cabc.Iterable[str], cmd_parts: list[str], color: bool | None
-) -> bool:
+    cmd_parts: list[str], color: bool | None = None
+) -> t.Iterator[t.Tuple[t.BinaryIO, str, bool]]:
     """Page through text by feeding it to another program. Invoking a
     pager through this might support colors.
-
-    Returns `True` if the command was found, `False` otherwise and thus another
-    pager should be attempted.
     """
     # Split the command into the invoked CLI and its parameters.
     if not cmd_parts:
-        return False
+        # Return a no-op context manager that yields None
+        @contextlib.contextmanager
+        def _noop():
+            yield None, "", False
+        return _noop()
 
     import shutil
 
@@ -428,7 +443,11 @@ def _pipepager(
 
     cmd_filepath = shutil.which(cmd)
     if not cmd_filepath:
-        return False
+        # Return a no-op context manager
+        @contextlib.contextmanager
+        def _noop():
+            yield None, "", False
+        return _noop()
 
     # Produces a normalized absolute path string.
     # multi-call binaries such as busybox derive their identity from the symlink
@@ -451,6 +470,9 @@ def _pipepager(
         elif "r" in less_flags or "R" in less_flags:
             color = True
 
+    if color is None:
+        color = False
+
     c = subprocess.Popen(
         [str(cmd_path)] + cmd_params,
         shell=False,
@@ -459,13 +481,10 @@ def _pipepager(
         errors="replace",
         text=True,
     )
-    assert c.stdin is not None
+    stdin = t.cast(t.BinaryIO, c.stdin)
+    encoding = get_best_encoding(stdin)
     try:
-        for text in generator:
-            if not color:
-                text = strip_ansi(text)
-
-            c.stdin.write(text)
+        yield stdin, encoding, color
     except BrokenPipeError:
         # In case the pager exited unexpectedly, ignore the broken pipe error.
         pass
@@ -479,7 +498,7 @@ def _pipepager(
     finally:
         # We must close stdin and wait for the pager to exit before we continue
         try:
-            c.stdin.close()
+            stdin.close()
         # Close implies flush, so it might throw a BrokenPipeError if the pager
         # process exited already.
         except BrokenPipeError:
@@ -501,64 +520,54 @@ def _pipepager(
             else:
                 break
 
-    return True
 
-
+@contextlib.contextmanager
 def _tempfilepager(
-    generator: cabc.Iterable[str], cmd_parts: list[str], color: bool | None
-) -> bool:
-    """Page through text by invoking a program on a temporary file.
-
-    Returns `True` if the command was found, `False` otherwise and thus another
-    pager should be attempted.
-    """
+    cmd_parts: list[str], color: bool | None = None
+) -> t.Iterator[t.Tuple[t.BinaryIO, str, bool]]:
+    """Page through text by invoking a program on a temporary file."""
     # Split the command into the invoked CLI and its parameters.
     if not cmd_parts:
-        return False
+        # Return a no-op context manager
+        @contextlib.contextmanager
+        def _noop():
+            yield None, "", False
+        return _noop()
 
     import shutil
+    import subprocess
 
     cmd = cmd_parts[0]
 
     cmd_filepath = shutil.which(cmd)
     if not cmd_filepath:
-        return False
+        # Return a no-op context manager
+        @contextlib.contextmanager
+        def _noop():
+            yield None, "", False
+        return _noop()
+
     # Produces a normalized absolute path string.
     # multi-call binaries such as busybox derive their identity from the symlink
     # less -> busybox. resolve() causes them to misbehave. (eg. less becomes busybox)
     cmd_path = Path(cmd_filepath).absolute()
 
-    import subprocess
     import tempfile
 
-    fd, filename = tempfile.mkstemp()
-    # TODO: This never terminates if the passed generator never terminates.
-    text = "".join(generator)
-    if not color:
-        text = strip_ansi(text)
     encoding = get_best_encoding(sys.stdout)
-    with open_stream(filename, "wb")[0] as f:
-        f.write(text.encode(encoding))
-    try:
-        subprocess.call([str(cmd_path), filename])
-    except OSError:
-        # Command not found
-        pass
-    finally:
-        os.close(fd)
-        os.unlink(filename)
-
-    return True
+    with tempfile.NamedTemporaryFile(mode="wb") as f:
+        yield f, encoding, color
+        f.flush()
+        subprocess.call([str(cmd_path), f.name])
 
 
+@contextlib.contextmanager
 def _nullpager(
-    stream: t.TextIO, generator: cabc.Iterable[str], color: bool | None
-) -> None:
+    stream: t.TextIO, color: bool | None = None
+) -> t.Iterator[t.Tuple[t.BinaryIO, str, bool]]:
     """Simply print unformatted text.  This is the ultimate fallback."""
-    for text in generator:
-        if not color:
-            text = strip_ansi(text)
-        stream.write(text)
+    encoding = get_best_encoding(stream)
+    yield stream, encoding, color
 
 
 class Editor:
