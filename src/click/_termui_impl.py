@@ -559,10 +559,17 @@ def _tempfilepager(
     import tempfile
 
     encoding = get_best_encoding(sys.stdout)
-    with tempfile.NamedTemporaryFile(mode="wb") as f:
+    # On Windows, NamedTemporaryFile cannot be opened by another process
+    # while Python still has it open, so we use delete=False and clean up manually
+    # rather than using a contextmanager here.
+    f = tempfile.NamedTemporaryFile(mode="wb", delete=False)
+    try:
         yield f, encoding, color
         f.flush()
+        f.close()
         subprocess.call([str(cmd_path), f.name])
+    finally:
+        os.unlink(f.name)
 
 
 @contextlib.contextmanager
