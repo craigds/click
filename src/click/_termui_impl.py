@@ -379,7 +379,7 @@ class MaybeStripAnsi(io.TextIOWrapper):
 
 def _pager_contextmanager(
     color: bool | None = None,
-) -> t.ContextManager[t.Tuple[t.BinaryIO, str, bool]]:
+) -> t.ContextManager[tuple[t.BinaryIO, str, bool]]:
     """Decide what method to use for paging through text."""
     stdout = _default_text_stdout()
 
@@ -424,7 +424,7 @@ def get_pager_file(color: bool | None = None) -> t.Generator[t.IO, None, None]:
 @contextlib.contextmanager
 def _pipepager(
     cmd_parts: list[str], color: bool | None = None
-) -> t.Iterator[t.Tuple[t.BinaryIO, str, bool]]:
+) -> t.Iterator[tuple[t.BinaryIO, str, bool]]:
     """Page through text by feeding it to another program. Invoking a
     pager through this might support colors.
     """
@@ -434,6 +434,7 @@ def _pipepager(
         @contextlib.contextmanager
         def _noop():
             yield None, "", False
+
         return _noop()
 
     import shutil
@@ -447,6 +448,7 @@ def _pipepager(
         @contextlib.contextmanager
         def _noop():
             yield None, "", False
+
         return _noop()
 
     # Produces a normalized absolute path string.
@@ -524,7 +526,7 @@ def _pipepager(
 @contextlib.contextmanager
 def _tempfilepager(
     cmd_parts: list[str], color: bool | None = None
-) -> t.Iterator[t.Tuple[t.BinaryIO, str, bool]]:
+) -> t.Iterator[tuple[t.BinaryIO, str, bool]]:
     """Page through text by invoking a program on a temporary file."""
     # Split the command into the invoked CLI and its parameters.
     if not cmd_parts:
@@ -532,6 +534,7 @@ def _tempfilepager(
         @contextlib.contextmanager
         def _noop():
             yield None, "", False
+
         return _noop()
 
     import shutil
@@ -545,6 +548,7 @@ def _tempfilepager(
         @contextlib.contextmanager
         def _noop():
             yield None, "", False
+
         return _noop()
 
     # Produces a normalized absolute path string.
@@ -564,7 +568,7 @@ def _tempfilepager(
 @contextlib.contextmanager
 def _nullpager(
     stream: t.TextIO, color: bool | None = None
-) -> t.Iterator[t.Tuple[t.BinaryIO, str, bool]]:
+) -> t.Iterator[tuple[t.BinaryIO, str, bool]]:
     """Simply print unformatted text.  This is the ultimate fallback."""
     encoding = get_best_encoding(stream)
     yield stream, encoding, color
