@@ -379,7 +379,7 @@ class MaybeStripAnsi(io.TextIOWrapper):
 
 def _pager_contextmanager(
     color: bool | None = None,
-) -> t.ContextManager[tuple[t.BinaryIO, str, bool]]:
+) -> t.ContextManager[tuple[t.BinaryIO | t.TextIO, str, bool]]:
     """Decide what method to use for paging through text."""
     stdout = _default_text_stdout()
 
@@ -406,7 +406,7 @@ def _pager_contextmanager(
 
 
 @contextlib.contextmanager
-def get_pager_file(color: bool | None = None) -> t.Generator[t.IO, None, None]:
+def get_pager_file(color: bool | None = None) -> t.Generator[t.TextIO, None, None]:
     """Context manager.
     Yields a writable file-like object which can be used as an output pager.
     .. versionadded:: 8.2
@@ -416,26 +416,23 @@ def get_pager_file(color: bool | None = None) -> t.Generator[t.IO, None, None]:
     with _pager_contextmanager(color=color) as (stream, encoding, color):
         if not getattr(stream, "encoding", None):
             # wrap in a text stream
-            stream = MaybeStripAnsi(stream, color=color, encoding=encoding)
-        yield stream
+            stream = MaybeStripAnsi(t.cast(t.BinaryIO, stream), color=color, encoding=encoding)
+        yield t.cast(t.TextIO, stream)
         stream.flush()
 
 
 @contextlib.contextmanager
 def _pipepager(
     cmd_parts: list[str], color: bool | None = None
-) -> t.Iterator[tuple[t.BinaryIO, str, bool]]:
+) -> t.Iterator[tuple[t.BinaryIO | t.TextIO, str, bool]]:
     """Page through text by feeding it to another program. Invoking a
     pager through this might support colors.
     """
     # Split the command into the invoked CLI and its parameters.
     if not cmd_parts:
-        # Return a no-op context manager that yields None
-        @contextlib.contextmanager
-        def _noop():
-            yield None, "", False
-
-        return _noop()
+        stdout = _default_text_stdout() or StringIO()
+        yield stdout, "utf-8", False
+        return
 
     import shutil
 
@@ -444,12 +441,9 @@ def _pipepager(
 
     cmd_filepath = shutil.which(cmd)
     if not cmd_filepath:
-        # Return a no-op context manager
-        @contextlib.contextmanager
-        def _noop():
-            yield None, "", False
-
-        return _noop()
+        stdout = _default_text_stdout() or StringIO()
+        yield stdout, "utf-8", False
+        return
 
     # Produces a normalized absolute path string.
     # multi-call binaries such as busybox derive their identity from the symlink
@@ -526,16 +520,13 @@ def _pipepager(
 @contextlib.contextmanager
 def _tempfilepager(
     cmd_parts: list[str], color: bool | None = None
-) -> t.Iterator[tuple[t.BinaryIO, str, bool]]:
+) -> t.Iterator[tuple[t.BinaryIO | t.TextIO, str, bool]]:
     """Page through text by invoking a program on a temporary file."""
     # Split the command into the invoked CLI and its parameters.
     if not cmd_parts:
-        # Return a no-op context manager
-        @contextlib.contextmanager
-        def _noop():
-            yield None, "", False
-
-        return _noop()
+        stdout = _default_text_stdout() or StringIO()
+        yield stdout, "utf-8", False
+        return
 
     import shutil
     import subprocess
@@ -544,12 +535,9 @@ def _tempfilepager(
 
     cmd_filepath = shutil.which(cmd)
     if not cmd_filepath:
-        # Return a no-op context manager
-        @contextlib.contextmanager
-        def _noop():
-            yield None, "", False
-
-        return _noop()
+        stdout = _default_text_stdout() or StringIO()
+        yield stdout, "utf-8", False
+        return
 
     # Produces a normalized absolute path string.
     # multi-call binaries such as busybox derive their identity from the symlink
@@ -559,12 +547,14 @@ def _tempfilepager(
     import tempfile
 
     encoding = get_best_encoding(sys.stdout)
+    if color is None:
+        color = False
     # On Windows, NamedTemporaryFile cannot be opened by another process
     # while Python still has it open, so we use delete=False and clean up manually
     # rather than using a contextmanager here.
     f = tempfile.NamedTemporaryFile(mode="wb", delete=False)
     try:
-        yield f, encoding, color
+        yield t.cast(t.BinaryIO, f), encoding, color
         f.flush()
         f.close()
         subprocess.call([str(cmd_path), f.name])
@@ -575,9 +565,11 @@ def _tempfilepager(
 @contextlib.contextmanager
 def _nullpager(
     stream: t.TextIO, color: bool | None = None
-) -> t.Iterator[tuple[t.BinaryIO, str, bool]]:
+) -> t.Iterator[tuple[t.TextIO, str, bool]]:
     """Simply print unformatted text.  This is the ultimate fallback."""
     encoding = get_best_encoding(stream)
+    if color is None:
+        color = False
     yield stream, encoding, color
 
 

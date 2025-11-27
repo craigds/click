@@ -258,7 +258,9 @@ def confirm(
     return rv
 
 
-def get_pager_file(color=None):
+def get_pager_file(
+    color: bool | None = None,
+) -> t.ContextManager[t.TextIO]:
     """Context manager.
 
     Yields a writable file-like object which can be used as an output pager.
