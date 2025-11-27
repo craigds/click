@@ -416,7 +416,9 @@ def get_pager_file(color: bool | None = None) -> t.Generator[t.TextIO, None, Non
     with _pager_contextmanager(color=color) as (stream, encoding, color):
         if not getattr(stream, "encoding", None):
             # wrap in a text stream
-            stream = MaybeStripAnsi(t.cast(t.BinaryIO, stream), color=color, encoding=encoding)
+            stream = MaybeStripAnsi(
+                t.cast(t.BinaryIO, stream), color=color, encoding=encoding
+            )
         yield t.cast(t.TextIO, stream)
         stream.flush()
 
