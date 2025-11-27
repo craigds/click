@@ -414,13 +414,20 @@ def get_pager_file(color: bool | None = None) -> t.Generator[t.TextIO, None, Non
                   default is autodetection.
     """
     with _pager_contextmanager(color=color) as (stream, encoding, color):
-        if not getattr(stream, "encoding", None):
-            # wrap in a text stream
-            stream = MaybeStripAnsi(
-                t.cast(t.BinaryIO, stream), color=color, encoding=encoding
-            )
-        yield t.cast(t.TextIO, stream)
-        stream.flush()
+        if not isinstance(stream, MaybeStripAnsi):
+            if hasattr(stream, "buffer"):
+                # Real TextIO with buffer - unwrap and wrap in MaybeStripAnsi
+                stream = MaybeStripAnsi(stream.buffer, color=color, encoding=encoding)
+            elif not getattr(stream, "encoding", None):
+                # BinaryIO - wrap directly in MaybeStripAnsi
+                stream = MaybeStripAnsi(stream, color=color, encoding=encoding)
+            else:
+                # StringIO - add .color attribute only, no ANSI stripping
+                stream.color = color  # type: ignore[attr-defined]
+        try:
+            yield t.cast(t.TextIO, stream)
+        finally:
+            stream.flush()
 
 
 @contextlib.contextmanager
